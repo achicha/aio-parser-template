@@ -44,8 +44,8 @@ class TestBaseParser:
     async def test_fetch(self):
         async with aiohttp.ClientSession(loop=self.loop) as session:
             # resp = await self.parser.fetch(session, 'https://httpbin.org/user-agent')
-            task = await self.parser.fetch(session=session, url='http://ya.ru', output='response')
-            resp = await asyncio.ensure_future(task)
+            resp = await self.parser.fetch(session=session, url='http://ya.ru', output='response')
+
             assert resp.method == 'GET'
             assert resp.status == 200
             assert isinstance(resp, aiohttp.client_reqrep.ClientResponse)

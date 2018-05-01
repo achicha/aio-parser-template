@@ -32,46 +32,10 @@ class MyException(Exception):
 #     return helper
 
 
-def add_task(semaphore, result_queue, save_queue=None):
-    def wrapper(func):
-        if asyncio.iscoroutinefunction(func):
-            # print('this function is a coroutine: {}'.format(func.__name__))
-
-            @wraps(func)
-            async def wrapped_f(self, *args, **kwargs):
-                # https://stackoverflow.com/questions/11731136/python-class-method-decorator-with-self-arguments
-
-                # lock semaphore
-                # print(semaphore(self)._value)               # show number of locked connections
-                await semaphore(self).acquire()             # wait for semaphore release
-                # add result task
-                task = asyncio.ensure_future(func(self, *args, **kwargs))
-                task.add_done_callback(lambda x: semaphore(self).release())
-                # add save task
-                if save_queue:
-                    task.add_done_callback(
-                        lambda x: save_queue(self).append(
-                            asyncio.ensure_future(self.save_result(x.result())))
-                    )
-                result_queue(self).append(task)
-                return task
-
-            return wrapped_f
-
-        # else:
-        #     @wraps(func)
-        #     def wrapped_f(*args, **kwargs):
-        #         result = func(*args, **kwargs)
-        #         return result
-        #     return wrapped_f
-
-    return wrapper
-
-
 class BaseParser(metaclass=ABCMeta):
     USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_1) AppleWebKit/604.3.5 (KHTML, like Gecko) Version/11.0.1 Safari/604.3.5'
 
-    def __init__(self, loop, parser_name='base', semaphore=3, user_agent: str = None):
+    def __init__(self, loop, semaphore=3, user_agent: str = None):
         """
             Abstract class for Api parser
 
@@ -82,7 +46,6 @@ class BaseParser(metaclass=ABCMeta):
         """
         self.loop = loop
         self.semaphore = asyncio.Semaphore(semaphore, loop=self.loop)
-        self.parser_name = parser_name
 
         self.user_agent = user_agent or self.USER_AGENT
         self.cookies_dict = {}
@@ -91,15 +54,40 @@ class BaseParser(metaclass=ABCMeta):
                              'Accept-Language': 'en-US',
                              'Accept-Encoding': 'gzip, deflate, br'
                              }
-        self.tasks = []
-        self.save_tasks = []
+        self.tasks = []         # fetch data from url
+        self.save_tasks = []    # save to DB
 
-    @add_task(semaphore=lambda x: x.semaphore,
-              result_queue=lambda x: x.tasks,
-              save_queue=lambda x: x.save_tasks)
+    async def add_task(self, session, url: str, collection_name: str, output='json',
+                       timeout=10, extra_headers=None, request_params=None):
+        """
+            Add task to queue
+            self.save_result: should be taken from DBMixin, which save data to DB
+
+        :param session:
+        :param url:
+        :param output: possible values are: json, text or response
+        :param collection_name: db_table name
+        :param timeout: default 10 seconds
+        :param extra_headers:
+        :param request_params: dict with user's json data for self.fetch
+        :return:
+        """
+
+        # print(self.semaphore._value)              # show number of locked connections
+        await self.semaphore.acquire()             # wait for semaphore release
+
+        task = asyncio.ensure_future(self.fetch(session, url, output=output, timeout=timeout,
+                                                extra_headers=extra_headers, request_params=request_params))
+
+        task.add_done_callback(lambda x: self.semaphore.release())
+        task.add_done_callback(
+            lambda x: self.save_tasks.append(
+                asyncio.ensure_future(self.save_result(collection_name, x.result())))
+        )
+        self.tasks.append(task)
+
     async def fetch(self, session, url, timeout=10, output='json',
-                    extra_headers: dict = None,
-                    request_params=None):
+                    extra_headers: dict = None, request_params=None):
         """
             Fetch data from url
 
@@ -245,8 +233,9 @@ class BaseParser(metaclass=ABCMeta):
         else:
             return {}
 
-    async def save_result(self, data):
-        print(self.parser_name)
+    @staticmethod
+    async def save_result(collection, data):
+        print(collection)
         print(data)
 
     async def task_manager(self):
@@ -261,7 +250,8 @@ class BaseParser(metaclass=ABCMeta):
 
         async with sess(connector=conn()) as session:
             # add task
-            await self.fetch(session=session, url='http://ya.ru', output='response')
+            await self.add_task(session=session, url='http://ya.ru',
+                                output='response', collection_name='base')
 
             # get results
             results = await asyncio.gather(*self.tasks)
