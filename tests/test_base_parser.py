@@ -67,6 +67,20 @@ class TestBaseParser:
 
     @pytest.mark.asyncio
     async def test_proxy_fetch(self):
+        async with aiohttp.ClientSession(loop=self.loop) as session:
+            res = await self.parser.fetch(session=session, url='https://api.ipify.org?format=json', output='json')
+
+        async with aiohttp.ClientSession(loop=self.loop) as session1:
+            await self.parser.get_free_proxy_list(session1)
+            proxy_res = await self.parser.proxy_fetch(session=session1,
+                                                      url='https://api.ipify.org?format=json', output='json')
+
+        # print(res['response']['ip'], proxy_res['response']['ip'])
+        assert res['response']['ip'] != proxy_res['response']['ip']
+
+    @pytest.mark.asyncio
+    async def test_proxy_task_manager(self):
         p = BaseParserClass(loop=self.loop, need_free_proxy=True)
         res = await p.task_manager(links=['https://httpbin.org/user-agent'])
         assert isinstance(res, list)
+

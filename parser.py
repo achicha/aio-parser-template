@@ -1,4 +1,5 @@
 import re
+from random import shuffle
 import asyncio
 from abc import ABCMeta
 from aiohttp.web_exceptions import HTTPException
@@ -107,6 +108,8 @@ class BaseParser(metaclass=ABCMeta):
         """
         if not self.free_proxy_lst:
             raise Exception('proxy list is empty')
+
+        #shuffle(self.free_proxy_lst)  # randomize items
 
         for proxy in self.free_proxy_lst:
             try:
@@ -287,7 +290,7 @@ class BaseParser(metaclass=ABCMeta):
 
     async def task_manager(self, links: list):
         # create session
-        conn = partial(TCPConnector, loop=self.loop, verify_ssl=False)
+        conn = partial(TCPConnector, loop=self.loop, verify_ssl=False, use_dns_cache=False)
         sess = partial(
             ClientSession,
             loop=self.loop,
@@ -314,5 +317,5 @@ class BaseParser(metaclass=ABCMeta):
 if __name__ == '__main__':
     loop_ = asyncio.new_event_loop()
     p = BaseParser(loop=loop_)
-    loop_.run_until_complete(p.task_manager())
+    srv = loop_.run_until_complete(p.task_manager(links=['https://api.ipify.org?format=json']))
     loop_.close()
