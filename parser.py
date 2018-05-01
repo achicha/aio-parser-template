@@ -1,3 +1,4 @@
+import re
 import asyncio
 from abc import ABCMeta
 from aiohttp.web_exceptions import HTTPException
@@ -35,7 +36,7 @@ class MyException(Exception):
 class BaseParser(metaclass=ABCMeta):
     USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_1) AppleWebKit/604.3.5 (KHTML, like Gecko) Version/11.0.1 Safari/604.3.5'
 
-    def __init__(self, loop, semaphore=3, user_agent: str = None):
+    def __init__(self, loop, semaphore=3, user_agent: str = None, need_free_proxy: bool=False):
         """
             Abstract class for Api parser
 
@@ -54,6 +55,8 @@ class BaseParser(metaclass=ABCMeta):
                              'Accept-Language': 'en-US',
                              'Accept-Encoding': 'gzip, deflate, br'
                              }
+        self.need_free_proxy = need_free_proxy
+        self.free_proxy_lst = []
         self.tasks = []         # fetch data from url
         self.save_tasks = []    # save to DB
 
@@ -76,8 +79,12 @@ class BaseParser(metaclass=ABCMeta):
         # print(self.semaphore._value)              # show number of locked connections
         await self.semaphore.acquire()             # wait for semaphore release
 
-        task = asyncio.ensure_future(self.fetch(session, url, output=output, timeout=timeout,
-                                                extra_headers=extra_headers, request_params=request_params))
+        if self.free_proxy_lst:
+            task = asyncio.ensure_future(self.proxy_fetch(session, url, output=output, timeout=timeout,
+                                                          extra_headers=extra_headers, request_params=request_params))
+        else:
+            task = asyncio.ensure_future(self.fetch(session, url, output=output, timeout=timeout,
+                                                    extra_headers=extra_headers, request_params=request_params))
 
         task.add_done_callback(lambda x: self.semaphore.release())
         task.add_done_callback(
@@ -86,8 +93,36 @@ class BaseParser(metaclass=ABCMeta):
         )
         self.tasks.append(task)
 
+    async def proxy_fetch(self, session, url, timeout=5, output='json', extra_headers=None, request_params=None):
+        """
+            Fetch data using proxy server
+
+        :param session:
+        :param url:
+        :param timeout:
+        :param output: json or text
+        :param extra_headers:
+        :param request_params:
+        :return:
+        """
+        if not self.free_proxy_lst:
+            raise Exception('proxy list is empty')
+
+        for proxy in self.free_proxy_lst:
+            try:
+                jresp = await self.fetch(session, url, timeout=timeout, extra_headers=extra_headers,
+                                         output=output, request_params=request_params, proxy_addr='http://' + proxy)
+            except asyncio.TimeoutError:
+                print(f'timeout with {proxy}')
+                continue
+            except MyException as e:
+                print(e, f'with proxy {proxy}')
+                continue
+            else:
+                return jresp
+
     async def fetch(self, session, url, timeout=10, output='json',
-                    extra_headers: dict = None, request_params=None):
+                    extra_headers: dict = None, request_params=None, proxy_addr=None):
         """
             Fetch data from url
 
@@ -97,6 +132,7 @@ class BaseParser(metaclass=ABCMeta):
         :param extra_headers:
         :param output: json or text or response
         :param request_params: dict with user's data
+        :param proxy_addr: proxy server like: http://8.8.8.8:8080
         :return:
         """
 
@@ -111,7 +147,8 @@ class BaseParser(metaclass=ABCMeta):
             async with session.get(url,
                                    timeout=timeout,
                                    headers=_headers,
-                                   params=request_params) as resp:
+                                   params=request_params,
+                                   proxy=proxy_addr) as resp:
 
                 if resp.status == 200:
                     if output == 'json':
@@ -125,7 +162,7 @@ class BaseParser(metaclass=ABCMeta):
                     else:
                         raise MyException('output param should be in [json, text, response]')
                 elif resp.status == 403:
-                    raise MyException(f'{resp.status}, need proxy')
+                    raise MyException(f'{resp.status}, forbidden -> need proxy')
                 elif resp.status >= 500:
                     raise MyException(f'{resp.status}, server error')
                 else:
@@ -135,6 +172,16 @@ class BaseParser(metaclass=ABCMeta):
             raise asyncio.TimeoutError
         except HTTPException:
             raise HTTPException
+
+    async def get_free_proxy_list(self, session):
+        """
+            Download list with free proxies from web page
+
+        :return: ['8.8.8.8:8080', '1.1.1.1:80']
+        """
+        content = await (self.fetch(session=session, url='https://www.ip-adress.com/proxy-list', output='text'))
+        proxies = re.findall(r'(\d+\.\d+\.\d+\.\d+)</a>(:\d+)', str(content))
+        self.free_proxy_lst = [''.join(_p) for _p in proxies]
 
     @staticmethod
     async def response_to_json(response):
@@ -238,7 +285,7 @@ class BaseParser(metaclass=ABCMeta):
         print(collection)
         print(data)
 
-    async def task_manager(self):
+    async def task_manager(self, links: list):
         # create session
         conn = partial(TCPConnector, loop=self.loop, verify_ssl=False)
         sess = partial(
@@ -249,9 +296,14 @@ class BaseParser(metaclass=ABCMeta):
             read_timeout=10.0)
 
         async with sess(connector=conn()) as session:
+            # parse free proxy
+            if self.need_free_proxy:
+                await self.get_free_proxy_list(session=session)
+
             # add task
-            await self.add_task(session=session, url='http://ya.ru',
-                                output='response', collection_name='base')
+            for link in links:
+                await self.add_task(session=session, url=link,
+                                    output='response', collection_name='base')
 
             # get results
             results = await asyncio.gather(*self.tasks)

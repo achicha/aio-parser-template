@@ -52,6 +52,21 @@ class TestBaseParser:
 
     @pytest.mark.asyncio
     async def test_task_manager(self):
-        res = await self.parser.task_manager()
+        res = await self.parser.task_manager(links=['http://ya.ru'])
         assert isinstance(res, list)
 
+    @pytest.mark.asyncio
+    async def test_get_free_proxy_list(self):
+        async with aiohttp.ClientSession(loop=self.loop) as session:
+            await self.parser.get_free_proxy_list(session)
+
+            assert isinstance(self.parser.free_proxy_lst, list)
+            assert len(self.parser.free_proxy_lst) > 10
+            assert self.parser.free_proxy_lst[0] == \
+                   re.findall(r'(\d+\.\d+\.\d+\.\d+:\d+)', self.parser.free_proxy_lst[0])[0]
+
+    @pytest.mark.asyncio
+    async def test_proxy_fetch(self):
+        p = BaseParserClass(loop=self.loop, need_free_proxy=True)
+        res = await p.task_manager(links=['https://httpbin.org/user-agent'])
+        assert isinstance(res, list)
